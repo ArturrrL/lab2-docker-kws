@@ -1,0 +1,8 @@
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# B008: File(...) у сигнатурі — стандартний патерн FastAPI
+ignore = ["B008"]

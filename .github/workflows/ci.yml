@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      acc_threshold:
+        description: "Поріг accuracy, % (поставте 99, щоб показати запуск, що впав)"
+        default: "80"
+
+env:
+  IMAGE: kws-api
+  ACC_THRESHOLD: ${{ github.event.inputs.acc_threshold || '80' }}
+  CI_EPOCHS: "3"   # менше епох, ніж у релізній збірці (10), щоб CI тривав хвилини
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint
+        run: |
+          pip install ruff==0.5.0
+          ruff check src/ scripts/
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: |
+            EPOCHS=${{ env.CI_EPOCHS }}
+            GIT_COMMIT=${{ github.sha }}
+            MODEL_VERSION=1.0.0
+          # кеш шарів між запусками: датасет і pip install не повторюються
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image size
+        run: docker images ${{ env.IMAGE }}
+
+      - name: Run container
+        run: |
+          docker run -d --name kws -p 8000:8000 ${{ env.IMAGE }}:${{ github.sha }}
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - name: Smoke test
+        run: |
+          curl -sf http://localhost:8000/model-info | jq .
+          for f in samples/*.wav; do
+            echo "== $f"; curl -sf -X POST -F "file=@$f" http://localhost:8000/predict | jq -c .
+          done
+          # некоректний файл → 400, а не 500
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -F "file=@samples/bad.txt" \
+                 http://localhost:8000/predict)
+          echo "bad file → HTTP $code"; test "$code" = "400"
+
+      - name: Accuracy gate
+        run: |
+          ACC=$(curl -s http://localhost:8000/model-info | jq '.accuracy')
+          echo "accuracy=$ACC threshold=$ACC_THRESHOLD"
+          python -c "import sys; sys.exit(0 if $ACC >= $ACC_THRESHOLD else 1)"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs kws || true

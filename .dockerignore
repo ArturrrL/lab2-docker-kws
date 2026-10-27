@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__/
+*.pyc
+data/
+SpeechCommands/
+*.ipynb
+.ipynb_checkpoints
+artifacts/
+results/
+report/
+*.md
+!README.md

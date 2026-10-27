@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+# Single-stage (для порівняння): навчання та інференс в одному образі.
+# У фінальний образ потрапляють датасет, train-залежності і проміжні файли.
+FROM python:3.10-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-train.txt requirements-api.txt ./
+RUN pip install --no-cache-dir -r requirements-train.txt -r requirements-api.txt
+
+ARG DATASET=speech_commands_v0.02
+RUN mkdir -p /app/data && python -c "import torchaudio; \
+torchaudio.datasets.SPEECHCOMMANDS('/app/data', url='${DATASET}', download=True)" \
+    && rm -f /app/data/*.tar.gz
+
+COPY src/ ./src/
+
+ARG EPOCHS=10
+ARG SEED=42
+ARG MODEL_VERSION=1.0.0
+RUN python -m src.train --classes yes no up down --epochs ${EPOCHS} --seed ${SEED} \
+        --data-dir /app/data --out /app/artifacts --model-version ${MODEL_VERSION} --num-workers 0
+
+ENV MODEL_PATH=/app/artifacts/model.pt PORT=8000 LOG_LEVEL=INFO \
+    MODEL_VERSION=${MODEL_VERSION} PYTHONUNBUFFERED=1
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"
+CMD ["sh", "-c", "exec uvicorn src.api:app --host 0.0.0.0 --port ${PORT}"]
